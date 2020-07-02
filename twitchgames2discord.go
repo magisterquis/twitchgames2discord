@@ -163,7 +163,11 @@ Options:
 	}
 	if "" == *gameID {
 		var err error
-		*gameID, err = getGameID(*clientID, oauth, *gameName)
+		*gameName, *gameID, err = getGameID(
+			*clientID,
+			oauth,
+			*gameName,
+		)
 		if nil != err {
 			log.Fatalf(
 				"Error getting game ID for %q: %s",
@@ -209,6 +213,7 @@ Options:
 		/* Send the new ones off to Discord */
 		go sendNewToDiscord(
 			*webhookURL,
+			*gameName,
 			streamsList,
 		)
 
@@ -267,7 +272,7 @@ func getOAuth(clientID string) (string, time.Time, error) {
 
 /* getGameID gets the twitch Game ID from a game name.  If multiple IDs match
 it will print a table and exit the program. */
-func getGameID(id, oauth, name string) (string, error) {
+func getGameID(id, oauth, rname string) (name, gameID string, err error) {
 	var s struct {
 		Data []struct {
 			ID   string
@@ -280,23 +285,26 @@ func getGameID(id, oauth, name string) (string, error) {
 		id,
 		oauth,
 		http.MethodGet,
-		url.Values{"name": []string{name}},
+		url.Values{"name": []string{rname}},
 		&s,
 	); nil != err {
-		return "", fmt.Errorf("requesting IDs from server: %s", err)
+		return "", "", fmt.Errorf(
+			"requesting IDs from server: %s",
+			err,
+		)
 	}
 
 	/* If we got none, typo */
 	switch len(s.Data) {
 	case 0: /* Didn't find one */
-		return "", fmt.Errorf("no ID found")
+		return "", "", fmt.Errorf("no ID found")
 	case 1: /* We win */
-		return s.Data[0].ID, nil
+		return s.Data[0].Name, s.Data[0].ID, nil
 	}
 
 	/* We got more than one so print a table and ask the user to choose */
 	tw := tabwriter.NewWriter(os.Stdout, 2, 8, 2, ' ', 0)
-	fmt.Printf("Found multiple possible Game IDs for %s.\n", name)
+	fmt.Printf("Found multiple possible Game IDs for %s.\n", rname)
 	fmt.Fprintf(tw, "ID\tName\n--\t----\n")
 	for _, d := range s.Data {
 		fmt.Fprintf(tw, "%s\t%s\n", d.ID, d.Name)
@@ -304,7 +312,7 @@ func getGameID(id, oauth, name string) (string, error) {
 	tw.Flush()
 	os.Exit(1)
 
-	return "", errors.New("unpossible!")
+	panic("unpossible")
 }
 
 /* request sends an HTTP request to the twitch API at URL u and tries to
@@ -407,7 +415,7 @@ func getStreams(id, oauth, gameid string) ([]Stream, error) {
 }
 
 /* sendNewToDiscord sends new streams to discord via the webhook URL */
-func sendNewToDiscord(wurl string, streams []Stream) {
+func sendNewToDiscord(wurl, gameName string, streams []Stream) {
 	/* Send off the new streams */
 	for _, stream := range streams {
 		/* If we've already seen this one, ignore it */
@@ -415,26 +423,29 @@ func sendNewToDiscord(wurl string, streams []Stream) {
 			continue
 		}
 		log.Printf(
-			"New Stream: [ID:%s] [User:%q] [Title:%q]",
+			"New Stream: [Game:%s] [ID:%s] [User:%q] [Title:%q]",
+			gameName,
 			stream.ID,
 			stream.User,
 			stream.Title,
 		)
 
 		/* If we've not seen it, send it off */
-		go sendToDiscord(wurl, stream)
+		go sendToDiscord(wurl, gameName, stream)
 	}
 }
 
 /* sendToDiscord sends the stream to discord using the webhook URL.
 discordL is held while sending. */
-func sendToDiscord(wurl string, stream Stream) {
+func sendToDiscord(wurl, gameName string, stream Stream) {
 	/* Message to send to Discord */
 	msg := fmt.Sprintf(
 		"```"+`
+Game:      %s
 Streamer:  %s
 Title:     %q
 Language:  %s`+"```https://twitch.tv/%s",
+		gameName,
 		stream.User,
 		stream.Title,
 		stream.Language,
